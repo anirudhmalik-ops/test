@@ -17,21 +17,26 @@ class ExcelProcessor:
     
     def __init__(self):
         self.openai_client = OpenAPIClient()
-        self.template_path = "/Users/anirudhmalik/Desktop/test_dextra/templates/Template-Waaree.xlsx/Template-Waaree.xlsx"
+        # Use project-relative template path
+        self.template_path = "document/Template-Waaree.xlsx"
 
     def process_with_semantic_mapping(self, uploaded_file_path):
         input_data = load_excel(uploaded_file_path)
         template_data = load_excel(self.template_path)
         template_structure = extract_template_structure(template_data)
 
+        # Build per-sheet row mappings
+        row_mapping_by_sheet = {}
         for sheet_name in template_structure:
             input_sheet = input_data.get(sheet_name)
-            if input_sheet is not None:
+            if input_sheet is not None and not input_sheet.empty:
                 template_rows = template_structure[sheet_name]["rows"]
                 input_rows = input_sheet.iloc[:, 0].dropna().astype(str).tolist()
-                row_mapping = match_rows(template_rows, input_rows)
-                processed_data = build_output(template_structure, input_data, row_mapping)
-                return processed_data
+                sheet_row_mapping = match_rows(template_rows, input_rows)
+                row_mapping_by_sheet[sheet_name] = sheet_row_mapping
+
+        processed_data = build_output(template_structure, input_data, row_mapping_by_sheet)
+        return processed_data
 
 
     def read_excel_file(self, file_path):
@@ -558,22 +563,36 @@ Return only the JSON data, no additional text or explanations.
         try:
             logger.info(f"Processing uploaded file: {uploaded_file_path}")
             
-            # Read uploaded file
-            uploaded_data = self.read_excel_file(uploaded_file_path)
-            logger.info(f"Uploaded data sheets: {list(uploaded_data.keys())}")
-            for sheet_name, data in uploaded_data.items():
-                logger.info(f"Sheet '{sheet_name}' has {len(data)} rows")
-                if data:
-                    logger.info(f"Sample data from '{sheet_name}': {data[0] if data else 'No data'}")
-            
-            # Analyze template
-            template_structure = self.analyze_template()
-            logger.info(f"Template structure: {json.dumps(template_structure, indent=2)}")
-            
-            # Process with OpenAI
-            logger.info("Starting OpenAI processing...")
-            processed_data = self.process_with_openai(uploaded_data, template_structure)
-            logger.info(f"OpenAI processing completed. Processed data keys: {list(processed_data.keys())}")
+            # Attempt semantic/embedding-based direct mapping first to avoid LLM hallucinations
+            processed_data = None
+            try:
+                logger.info("Attempting semantic mapping pipeline (no LLM)...")
+                processed_data = self.process_with_semantic_mapping(uploaded_file_path)
+                if processed_data and isinstance(processed_data, dict) and processed_data.get('sheets'):
+                    logger.info("Semantic mapping succeeded. Skipping LLM processing.")
+                else:
+                    logger.warning("Semantic mapping returned empty or invalid data. Will fall back to LLM.")
+                    processed_data = None
+            except Exception as sem_err:
+                logger.warning(f"Semantic mapping failed, will fall back to LLM. Reason: {sem_err}")
+
+            if processed_data is None:
+                # Read uploaded file (for LLM path)
+                uploaded_data = self.read_excel_file(uploaded_file_path)
+                logger.info(f"Uploaded data sheets: {list(uploaded_data.keys())}")
+                for sheet_name, data in uploaded_data.items():
+                    logger.info(f"Sheet '{sheet_name}' has {len(data)} rows")
+                    if data:
+                        logger.info(f"Sample data from '{sheet_name}': {data[0] if data else 'No data'}")
+                
+                # Analyze template
+                template_structure = self.analyze_template()
+                logger.info(f"Template structure: {json.dumps(template_structure, indent=2)}")
+                
+                # Process with OpenAI (fallback)
+                logger.info("Starting OpenAI processing (fallback)...")
+                processed_data = self.process_with_openai(uploaded_data, template_structure)
+                logger.info(f"OpenAI processing completed. Processed data keys: {list(processed_data.keys())}")
             
             # Log processed data structure
             if 'sheets' in processed_data:
@@ -595,6 +614,7 @@ Return only the JSON data, no additional text or explanations.
             
             # Create formatted Excel file
             logger.info("Creating formatted Excel file...")
+            os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
             self.create_formatted_excel(processed_data, output_path)
             
             logger.info(f"File processing completed: {output_path}")

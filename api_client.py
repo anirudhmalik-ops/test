@@ -60,6 +60,8 @@ class OpenAPIClient:
         # Add model for standard OpenAI (not needed for Azure)
         if self.provider != 'azure':
             data["model"] = self.model
+            # Prefer JSON mode when supported to force valid JSON outputs
+            data["response_format"] = {"type": "json_object"}
         
         try:
             logger.info(f"Making OpenAI API request to {url}")
